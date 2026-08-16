@@ -1,0 +1,169 @@
+#define UNICODE
+#define _UNICODE
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+
+#include <windows.h>
+#include <commctrl.h>
+#include <powrprof.h>
+#include <wbemidl.h>
+#include <comdef.h>
+#include <shellapi.h>
+#include <string>
+#include <vector>
+#include <map>
+#include <algorithm>
+#include <sstream>
+#include <iomanip>
+#include <limits>
+#include <cwctype>
+
+#pragma comment(lib, "comctl32.lib")
+#pragma comment(lib, "powrprof.lib")
+#pragma comment(lib, "wbemuuid.lib")
+#pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "oleaut32.lib")
+#pragma comment(lib, "advapi32.lib")
+#pragma comment(lib, "shell32.lib")
+
+static const wchar_t* APP_TITLE = L"Laptop Cooling Tool v0.1.0";
+
+// Processor power management subgroup:
+// 54533251-82be-4824-96c1-47b60b740d00
+static const GUID GUID_PROCESSOR_SUBGROUP_LOCAL =
+{0x54533251,0x82be,0x4824,{0x96,0xc1,0x47,0xb6,0x0b,0x74,0x0d,0x00}};
+
+// Processor performance boost mode (PERFBOOSTMODE):
+// be337238-0d82-4146-a960-4f3749d470c7
+static const GUID GUID_PERFBOOSTMODE_LOCAL =
+{0xbe337238,0x0d82,0x4146,{0xa9,0x60,0x4f,0x37,0x49,0xd4,0x70,0xc7}};
+
+// Maximum processor state (PROCTHROTTLEMAX):
+// bc5038f7-23e0-4960-96da-33abaf5935ec
+static const GUID GUID_PROCTHROTTLEMAX_LOCAL =
+{0xbc5038f7,0x23e0,0x4960,{0x96,0xda,0x33,0xab,0xaf,0x59,0x35,0xec}};
+
+enum ControlId
+{
+    IDC_SENSOR_LIST = 1001,
+    IDC_STATUS,
+    IDC_CPU_NAME,
+    IDC_RESET_MINMAX,
+    IDC_REFRESH_SENSOR,
+    IDC_START_LHM,
+    IDC_BOOST_AC,
+    IDC_BOOST_DC,
+    IDC_MAX_AC,
+    IDC_MAX_DC,
+    IDC_APPLY,
+    IDC_PRESET_BALANCED,
+    IDC_PRESET_QUIET,
+    IDC_PRESET_MAX,
+    IDC_POWER_STATUS
+};
+
+struct SensorReading
+{
+    std::wstring id;
+    std::wstring name;
+    double value;
+};
+
+struct SensorStat
+{
+    double current = 0.0;
+    double minValue = std::numeric_limits<double>::max();
+    double maxValue = -std::numeric_limits<double>::max();
+};
+
+static HWND g_hwnd = nullptr;
+static HWND g_list = nullptr;
+static HWND g_status = nullptr;
+static HWND g_cpuName = nullptr;
+static HWND g_powerStatus = nullptr;
+static HWND g_boostAc = nullptr;
+static HWND g_boostDc = nullptr;
+static HWND g_maxAc = nullptr;
+static HWND g_maxDc = nullptr;
+static HFONT g_font = nullptr;
+static HFONT g_titleFont = nullptr;
+static std::map<std::wstring, SensorStat> g_stats;
+static bool g_minMaxInitialized = false;
+
+static std::wstring FormatTemp(double v)
+{
+    std::wostringstream ss;
+    ss << std::fixed << std::setprecision(1) << v << L" C";
+    return ss.str();
+}
+
+static std::wstring GetCpuName()
+{
+    HKEY key = nullptr;
+    wchar_t buf[256] = {};
+    DWORD type = 0;
+    DWORD size = sizeof(buf);
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE,
+        L"HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0",
+        0, KEY_READ, &key) == ERROR_SUCCESS)
+    {
+        if (RegQueryValueExW(key, L"ProcessorNameString", nullptr, &type,
+            reinterpret_cast<LPBYTE>(buf), &size) == ERROR_SUCCESS &&
+            (type == REG_SZ || type == REG_EXPAND_SZ))
+        {
+            RegCloseKey(key);
+            return buf;
+        }
+        RegCloseKey(key);
+    }
+    return L"CPU name unavailable";
+}
+
+static bool VariantToWString(const VARIANT& v, std::wstring& out)
+{
+    if (v.vt == VT_BSTR && v.bstrVal)
+    {
+        out.assign(v.bstrVal, SysStringLen(v.bstrVal));
+        return true;
+    }
+    return false;
+}
+
+static bool VariantToDouble(const VARIANT& v, double& out)
+{
+    switch (v.vt)
+    {
+    case VT_R4: out = v.fltVal; return true;
+    case VT_R8: out = v.dblVal; return true;
+    case VT_I2: out = v.iVal; return true;
+    case VT_I4: out = v.lVal; return true;
+    case VT_UI2: out = v.uiVal; return true;
+    case VT_UI4: out = v.ulVal; return true;
+    default: break;
+    }
+    VARIANT converted;
+    VariantInit(&converted);
+    if (SUCCEEDED(VariantChangeType(&converted, const_cast<VARIANT*>(&v), 0, VT_R8)))
+    {
+        out = converted.dblVal;
+        VariantClear(&converted);
+        return true;
+    }
+    VariantClear(&converted);
+    return false;
+}
+
+static bool ContainsInsensitive(const std::wstring& text, const std::wstring& needle)
+{
+    if (needle.empty()) return true;
+    std::wstring a = text;
+    std::wstring b = needle;
+    std::transform(a.begin(), a.end(), a.begin(), [](wchar_t c) { return static_cast<wchar_t>(towlower(c)); });
+    std::transform(b.begin(), b.end(), b.begin(), [](wchar_t c) { return static_cast<wchar_t>(towlower(c)); });
+    return a.find(b) != std::wstring::npos;
+}
+
+class LhmWmiReader
+{
+public:
+    bool ReadCpuTemperatures(st
