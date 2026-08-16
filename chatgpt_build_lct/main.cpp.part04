@@ -1,0 +1,99 @@
+ext(g_list, row, 1, const_cast<LPWSTR>(cur.c_str()));
+        ListView_SetItemText(g_list, row, 2, const_cast<LPWSTR>(minText.c_str()));
+        ListView_SetItemText(g_list, row, 3, const_cast<LPWSTR>(maxText.c_str()));
+    }
+    g_minMaxInitialized = true;
+
+    std::wostringstream ss;
+    ss << L"LibreHardwareMonitor: connected | CPU sensors: " << readings.size()
+       << L" | Current range: " << std::fixed << std::setprecision(1)
+       << lowest << L" C - " << highest << L" C";
+    SetWindowTextW(g_status, ss.str().c_str());
+}
+
+static void ResetMinMax()
+{
+    g_stats.clear();
+    g_minMaxInitialized = false;
+    RefreshSensors();
+}
+
+static void StartLibreHardwareMonitor()
+{
+    wchar_t exePath[MAX_PATH] = {};
+    GetModuleFileNameW(nullptr, exePath, MAX_PATH);
+    std::wstring base(exePath);
+    size_t pos = base.find_last_of(L"\\/");
+    if (pos != std::wstring::npos) base.resize(pos + 1);
+    std::wstring path = base + L"Sensors\\LibreHardwareMonitor.exe";
+
+    DWORD attr = GetFileAttributesW(path.c_str());
+    if (attr == INVALID_FILE_ATTRIBUTES)
+    {
+        MessageBoxW(g_hwnd,
+            L"Sensors\\LibreHardwareMonitor.exe was not found.\n\n"
+            L"Download LibreHardwareMonitor from its official GitHub release, then copy the portable files into the Sensors folder.",
+            APP_TITLE, MB_ICONINFORMATION);
+        return;
+    }
+
+    HINSTANCE result = ShellExecuteW(g_hwnd, L"runas", path.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+    if (reinterpret_cast<INT_PTR>(result) <= 32)
+        MessageBoxW(g_hwnd, L"LibreHardwareMonitor could not be started.", APP_TITLE, MB_ICONWARNING);
+}
+
+static HWND MakeStatic(HWND parent, const wchar_t* text, int x, int y, int w, int h, int id = 0)
+{
+    HWND hWnd = CreateWindowExW(0, L"STATIC", text, WS_CHILD | WS_VISIBLE,
+        x, y, w, h, parent, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(hWnd, WM_SETFONT, reinterpret_cast<WPARAM>(g_font), TRUE);
+    return hWnd;
+}
+
+static HWND MakeButton(HWND parent, const wchar_t* text, int x, int y, int w, int h, int id)
+{
+    HWND hWnd = CreateWindowExW(0, L"BUTTON", text, WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        x, y, w, h, parent, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(hWnd, WM_SETFONT, reinterpret_cast<WPARAM>(g_font), TRUE);
+    return hWnd;
+}
+
+static HWND MakeCombo(HWND parent, int x, int y, int w, int h, int id)
+{
+    HWND hWnd = CreateWindowExW(0, WC_COMBOBOXW, L"",
+        WS_CHILD | WS_VISIBLE | CBS_DROPDOWNLIST | WS_VSCROLL,
+        x, y, w, h, parent, reinterpret_cast<HMENU>(static_cast<INT_PTR>(id)), GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(hWnd, WM_SETFONT, reinterpret_cast<WPARAM>(g_font), TRUE);
+    return hWnd;
+}
+
+static void CreateUi(HWND hwnd)
+{
+    g_font = CreateFontW(-18, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+    g_titleFont = CreateFontW(-23, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+        DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+        CLEARTYPE_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Segoe UI");
+
+    g_cpuName = MakeStatic(hwnd, GetCpuName().c_str(), 20, 16, 810, 32, IDC_CPU_NAME);
+    SendMessageW(g_cpuName, WM_SETFONT, reinterpret_cast<WPARAM>(g_titleFont), TRUE);
+
+    MakeStatic(hwnd, L"CPU temperature sensors - current / minimum / maximum", 20, 56, 650, 24);
+
+    g_list = CreateWindowExW(WS_EX_CLIENTEDGE, WC_LISTVIEWW, L"",
+        WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SINGLESEL,
+        20, 84, 820, 275, hwnd,
+        reinterpret_cast<HMENU>(static_cast<INT_PTR>(IDC_SENSOR_LIST)), GetModuleHandleW(nullptr), nullptr);
+    SendMessageW(g_list, WM_SETFONT, reinterpret_cast<WPARAM>(g_font), TRUE);
+    ListView_SetExtendedListViewStyle(g_list, LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES | LVS_EX_DOUBLEBUFFER);
+    SetListColumns();
+
+    g_status = MakeStatic(hwnd, L"Sensor status", 20, 366, 820, 26, IDC_STATUS);
+    MakeButton(hwnd, L"Reset Min/Max", 20, 400, 145, 34, IDC_RESET_MINMAX);
+    MakeButton(hwnd, L"Refresh", 175, 400, 110, 34, IDC_REFRESH_SENSOR);
+    MakeButton(hwnd, L"Start LibreHardwareMonitor", 295, 400, 235, 34, IDC_START_LHM);
+
+    MakeStatic(hwnd, L"Processor power control", 20, 451, 300, 25);
+    MakeStatic(hwnd, L"Boost - Plugged in", 20, 484, 150, 25);
+    g_boostAc = MakeCombo(hw
