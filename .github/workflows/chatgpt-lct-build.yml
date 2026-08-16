@@ -1,0 +1,70 @@
+name: ChatGPT LaptopCoolingTool Build
+
+on:
+  push:
+    branches:
+      - chatgpt-build-laptopcooling-v0.1.0
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Enable MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Reassemble source
+        shell: cmd
+        run: |
+          if not exist build_lct mkdir build_lct
+          copy /b chatgpt_build_lct\main.cpp.part00+chatgpt_build_lct\main.cpp.part01+chatgpt_build_lct\main.cpp.part02+chatgpt_build_lct\main.cpp.part03+chatgpt_build_lct\main.cpp.part04+chatgpt_build_lct\main.cpp.part05 build_lct\main.cpp
+
+      - name: Compile Win64 EXE with MSVC
+        shell: cmd
+        run: |
+          if not exist package mkdir package
+          cl /nologo /std:c++17 /EHsc /W4 /O2 /DUNICODE /D_UNICODE build_lct\main.cpp /Fe:package\LaptopCoolingTool.exe /link user32.lib gdi32.lib comctl32.lib powrprof.lib wbemuuid.lib ole32.lib oleaut32.lib advapi32.lib shell32.lib /SUBSYSTEM:WINDOWS /MANIFEST:EMBED /MANIFESTUAC:"level='requireAdministrator' uiAccess='false'"
+
+      - name: Bundle official LibreHardwareMonitor v0.9.6
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Force -Path package\Sensors | Out-Null
+          Invoke-WebRequest -Uri "https://github.com/LibreHardwareMonitor/LibreHardwareMonitor/releases/download/v0.9.6/LibreHardwareMonitor.zip" -OutFile lhm.zip
+          Expand-Archive -Path lhm.zip -DestinationPath package\Sensors -Force
+          $sensorRoot = (Resolve-Path "package\Sensors").Path
+          $exe = Get-ChildItem "package\Sensors" -Recurse -Filter "LibreHardwareMonitor.exe" | Select-Object -First 1
+          if (-not $exe) { throw "LibreHardwareMonitor.exe not found after extraction" }
+          if ($exe.Directory.FullName -ne $sensorRoot) {
+            Copy-Item -Path (Join-Path $exe.Directory.FullName "*") -Destination "package\Sensors" -Recurse -Force
+          }
+          if (-not (Test-Path "package\Sensors\LibreHardwareMonitor.exe")) { throw "Sensor bundle layout failed" }
+          @"
+          LaptopCoolingTool v0.1.0 test build
+
+          1. Run LaptopCoolingTool.exe as administrator.
+          2. Click Start LibreHardwareMonitor.
+          3. Approve the UAC prompt if Windows asks.
+          4. Wait a few seconds; CPU temperature sensors should appear with Current / Minimum / Maximum.
+          5. Use Reset Min/Max to restart the statistics.
+
+          This package includes the official LibreHardwareMonitor v0.9.6 portable release in the Sensors folder.
+          "@ | Set-Content -Path package\TEST_README.txt -Encoding ASCII
+
+      - name: Verify output
+        shell: powershell
+        run: |
+          Get-Item package\LaptopCoolingTool.exe | Format-List Name,Length,LastWriteTime
+          Get-Item package\Sensors\LibreHardwareMonitor.exe | Format-List Name,Length,LastWriteTime
+          Get-FileHash package\LaptopCoolingTool.exe -Algorithm SHA256
+
+      - name: Upload test package
+        uses: actions/upload-artifact@v4
+        with:
+          name: LaptopCoolingTool_v0.1.0_TestBuild
+          path: package
+          if-no-files-found: error
+          compression-level: 6
