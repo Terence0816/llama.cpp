@@ -1,0 +1,123 @@
+d::vector<SensorReading>& out, std::wstring& error)
+    {
+        out.clear();
+        error.clear();
+
+        IWbemLocator* locator = nullptr;
+        IWbemServices* services = nullptr;
+        HRESULT hr = CoCreateInstance(CLSID_WbemLocator, nullptr,
+            CLSCTX_INPROC_SERVER, IID_IWbemLocator,
+            reinterpret_cast<void**>(&locator));
+        if (FAILED(hr))
+        {
+            error = L"WMI locator creation failed.";
+            return false;
+        }
+
+        BSTR ns = SysAllocString(L"ROOT\\LibreHardwareMonitor");
+        hr = locator->ConnectServer(ns, nullptr, nullptr, nullptr, 0, nullptr, nullptr, &services);
+        SysFreeString(ns);
+        if (FAILED(hr))
+        {
+            locator->Release();
+            error = L"LibreHardwareMonitor WMI provider was not found. Start LibreHardwareMonitor first.";
+            return false;
+        }
+
+        hr = CoSetProxyBlanket(services,
+            RPC_C_AUTHN_WINNT, RPC_C_AUTHZ_NONE, nullptr,
+            RPC_C_AUTHN_LEVEL_CALL, RPC_C_IMP_LEVEL_IMPERSONATE,
+            nullptr, EOAC_NONE);
+        if (FAILED(hr))
+        {
+            services->Release();
+            locator->Release();
+            error = L"WMI security setup failed.";
+            return false;
+        }
+
+        std::vector<std::wstring> cpuParents;
+        QueryCpuHardwareIds(services, cpuParents);
+
+        IEnumWbemClassObject* enumerator = nullptr;
+        BSTR language = SysAllocString(L"WQL");
+        BSTR query = SysAllocString(L"SELECT Identifier,Name,SensorType,Value,Parent FROM Sensor");
+        hr = services->ExecQuery(language, query,
+            WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY,
+            nullptr, &enumerator);
+        SysFreeString(query);
+        SysFreeString(language);
+
+        if (FAILED(hr) || !enumerator)
+        {
+            services->Release();
+            locator->Release();
+            error = L"LibreHardwareMonitor Sensor query failed.";
+            return false;
+        }
+
+        while (true)
+        {
+            IWbemClassObject* obj = nullptr;
+            ULONG returned = 0;
+            hr = enumerator->Next(250, 1, &obj, &returned);
+            if (FAILED(hr) || returned == 0 || !obj)
+                break;
+
+            VARIANT vId, vName, vType, vValue, vParent;
+            VariantInit(&vId); VariantInit(&vName); VariantInit(&vType);
+            VariantInit(&vValue); VariantInit(&vParent);
+
+            obj->Get(L"Identifier", 0, &vId, nullptr, nullptr);
+            obj->Get(L"Name", 0, &vName, nullptr, nullptr);
+            obj->Get(L"SensorType", 0, &vType, nullptr, nullptr);
+            obj->Get(L"Value", 0, &vValue, nullptr, nullptr);
+            obj->Get(L"Parent", 0, &vParent, nullptr, nullptr);
+
+            std::wstring id, name, type, parent;
+            double value = 0.0;
+            bool ok = VariantToWString(vId, id) &&
+                      VariantToWString(vName, name) &&
+                      VariantToWString(vType, type) &&
+                      VariantToDouble(vValue, value);
+            VariantToWString(vParent, parent);
+
+            if (ok && _wcsicmp(type.c_str(), L"Temperature") == 0)
+            {
+                bool isCpu = false;
+                for (const auto& cpuParent : cpuParents)
+                {
+                    if (parent == cpuParent || id.find(cpuParent) == 0)
+                    {
+                        isCpu = true;
+                        break;
+                    }
+                }
+
+                if (cpuParents.empty())
+                {
+                    isCpu = ContainsInsensitive(id, L"cpu") ||
+                            ContainsInsensitive(name, L"cpu") ||
+                            ContainsInsensitive(name, L"core") ||
+                            ContainsInsensitive(name, L"package") ||
+                            ContainsInsensitive(name, L"tctl") ||
+                            ContainsInsensitive(name, L"tdie");
+                }
+
+                if (isCpu && value > -100.0 && value < 200.0)
+                    out.push_back({ id, name, value });
+            }
+
+            VariantClear(&vParent); VariantClear(&vValue); VariantClear(&vType);
+            VariantClear(&vName); VariantClear(&vId);
+            obj->Release();
+        }
+
+        enumerator->Release();
+        services->Release();
+        locator->Release();
+
+        if (out.empty())
+        {
+            error = L"LibreHardwareMonitor is connected, but no CPU temperature sensors were returned.";
+           
