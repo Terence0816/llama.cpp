@@ -1,0 +1,142 @@
+  return false;
+        }
+
+        std::sort(out.begin(), out.end(), [](const SensorReading& a, const SensorReading& b) {
+            return a.name < b.name;
+        });
+        return true;
+    }
+
+private:
+    void QueryCpuHardwareIds(IWbemServices* services, std::vector<std::wstring>& ids)
+    {
+        IEnumWbemClassObject* enumerator = nullptr;
+        BSTR language = SysAllocString(L"WQL");
+        BSTR query = SysAllocString(L"SELECT Identifier,HardwareType FROM Hardware");
+        HRESULT hr = services->ExecQuery(language, query,
+            WBEM_FLAG_FORWARD_ONLY | WBEM_FLAG_RETURN_IMMEDIATELY,
+            nullptr, &enumerator);
+        SysFreeString(query);
+        SysFreeString(language);
+        if (FAILED(hr) || !enumerator)
+            return;
+
+        while (true)
+        {
+            IWbemClassObject* obj = nullptr;
+            ULONG returned = 0;
+            hr = enumerator->Next(200, 1, &obj, &returned);
+            if (FAILED(hr) || returned == 0 || !obj)
+                break;
+
+            VARIANT vId, vType;
+            VariantInit(&vId); VariantInit(&vType);
+            obj->Get(L"Identifier", 0, &vId, nullptr, nullptr);
+            obj->Get(L"HardwareType", 0, &vType, nullptr, nullptr);
+            std::wstring id, type;
+            if (VariantToWString(vId, id) && VariantToWString(vType, type))
+            {
+                if (_wcsicmp(type.c_str(), L"Cpu") == 0)
+                    ids.push_back(id);
+            }
+            VariantClear(&vType); VariantClear(&vId);
+            obj->Release();
+        }
+        enumerator->Release();
+    }
+};
+
+static LhmWmiReader g_reader;
+
+static std::wstring BoostName(DWORD v)
+{
+    switch (v)
+    {
+    case 0: return L"Disabled";
+    case 1: return L"Enabled";
+    case 2: return L"Aggressive";
+    case 3: return L"Efficient Enabled";
+    case 4: return L"Efficient Aggressive";
+    default:
+        {
+            std::wostringstream ss;
+            ss << L"Index " << v;
+            return ss.str();
+        }
+    }
+}
+
+static bool ReadPowerValue(const GUID& setting, bool ac, DWORD& value)
+{
+    GUID* scheme = nullptr;
+    if (PowerGetActiveScheme(nullptr, &scheme) != ERROR_SUCCESS || !scheme)
+        return false;
+    DWORD result = ac
+        ? PowerReadACValueIndex(nullptr, scheme, &GUID_PROCESSOR_SUBGROUP_LOCAL, &setting, &value)
+        : PowerReadDCValueIndex(nullptr, scheme, &GUID_PROCESSOR_SUBGROUP_LOCAL, &setting, &value);
+    LocalFree(scheme);
+    return result == ERROR_SUCCESS;
+}
+
+static bool WritePowerValue(const GUID& setting, bool ac, DWORD value)
+{
+    GUID* scheme = nullptr;
+    if (PowerGetActiveScheme(nullptr, &scheme) != ERROR_SUCCESS || !scheme)
+        return false;
+    DWORD result = ac
+        ? PowerWriteACValueIndex(nullptr, scheme, &GUID_PROCESSOR_SUBGROUP_LOCAL, &setting, value)
+        : PowerWriteDCValueIndex(nullptr, scheme, &GUID_PROCESSOR_SUBGROUP_LOCAL, &setting, value);
+    if (result == ERROR_SUCCESS)
+        result = PowerSetActiveScheme(nullptr, scheme);
+    LocalFree(scheme);
+    return result == ERROR_SUCCESS;
+}
+
+static void FillBoostCombo(HWND combo)
+{
+    SendMessageW(combo, CB_RESETCONTENT, 0, 0);
+    const wchar_t* items[] = {
+        L"Disabled",
+        L"Enabled",
+        L"Aggressive",
+        L"Efficient Enabled",
+        L"Efficient Aggressive"
+    };
+    for (const auto* item : items)
+        SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(item));
+}
+
+static void FillMaxCombo(HWND combo)
+{
+    SendMessageW(combo, CB_RESETCONTENT, 0, 0);
+    const int items[] = {100, 99, 95, 90, 85, 80, 75, 70, 60, 50};
+    for (int v : items)
+    {
+        wchar_t text[16];
+        wsprintfW(text, L"%d%%", v);
+        LRESULT idx = SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(text));
+        SendMessageW(combo, CB_SETITEMDATA, idx, v);
+    }
+}
+
+static void SelectMaxValue(HWND combo, DWORD value)
+{
+    int count = static_cast<int>(SendMessageW(combo, CB_GETCOUNT, 0, 0));
+    for (int i = 0; i < count; ++i)
+    {
+        if (static_cast<DWORD>(SendMessageW(combo, CB_GETITEMDATA, i, 0)) == value)
+        {
+            SendMessageW(combo, CB_SETCURSEL, i, 0);
+            return;
+        }
+    }
+    wchar_t text[16];
+    wsprintfW(text, L"%lu%%", value);
+    int idx = static_cast<int>(SendMessageW(combo, CB_ADDSTRING, 0, reinterpret_cast<LPARAM>(text)));
+    SendMessageW(combo, CB_SETITEMDATA, idx, value);
+    SendMessageW(combo, CB_SETCURSEL, idx, 0);
+}
+
+static DWORD GetComboMaxValue(HWND combo)
+{
+   
