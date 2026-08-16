@@ -1,0 +1,122 @@
+  int idx = static_cast<int>(SendMessageW(combo, CB_GETCURSEL, 0, 0));
+    if (idx < 0) return 100;
+    return static_cast<DWORD>(SendMessageW(combo, CB_GETITEMDATA, idx, 0));
+}
+
+static void RefreshPowerControls()
+{
+    DWORD acBoost = 0, dcBoost = 0, acMax = 100, dcMax = 100;
+    bool ok1 = ReadPowerValue(GUID_PERFBOOSTMODE_LOCAL, true, acBoost);
+    bool ok2 = ReadPowerValue(GUID_PERFBOOSTMODE_LOCAL, false, dcBoost);
+    bool ok3 = ReadPowerValue(GUID_PROCTHROTTLEMAX_LOCAL, true, acMax);
+    bool ok4 = ReadPowerValue(GUID_PROCTHROTTLEMAX_LOCAL, false, dcMax);
+
+    if (ok1) SendMessageW(g_boostAc, CB_SETCURSEL, std::min<DWORD>(acBoost, 4), 0);
+    if (ok2) SendMessageW(g_boostDc, CB_SETCURSEL, std::min<DWORD>(dcBoost, 4), 0);
+    if (ok3) SelectMaxValue(g_maxAc, acMax);
+    if (ok4) SelectMaxValue(g_maxDc, dcMax);
+
+    if (ok1 && ok2 && ok3 && ok4)
+    {
+        std::wostringstream ss;
+        ss << L"Active plan: AC Boost=" << BoostName(acBoost)
+           << L", DC Boost=" << BoostName(dcBoost)
+           << L", AC Max=" << acMax << L"%, DC Max=" << dcMax << L"%";
+        SetWindowTextW(g_powerStatus, ss.str().c_str());
+    }
+    else
+    {
+        SetWindowTextW(g_powerStatus, L"Unable to read one or more processor power settings.");
+    }
+}
+
+static void ApplyPowerControls()
+{
+    int acBoost = static_cast<int>(SendMessageW(g_boostAc, CB_GETCURSEL, 0, 0));
+    int dcBoost = static_cast<int>(SendMessageW(g_boostDc, CB_GETCURSEL, 0, 0));
+    DWORD acMax = GetComboMaxValue(g_maxAc);
+    DWORD dcMax = GetComboMaxValue(g_maxDc);
+
+    bool ok = true;
+    ok = WritePowerValue(GUID_PERFBOOSTMODE_LOCAL, true, std::max(acBoost, 0)) && ok;
+    ok = WritePowerValue(GUID_PERFBOOSTMODE_LOCAL, false, std::max(dcBoost, 0)) && ok;
+    ok = WritePowerValue(GUID_PROCTHROTTLEMAX_LOCAL, true, acMax) && ok;
+    ok = WritePowerValue(GUID_PROCTHROTTLEMAX_LOCAL, false, dcMax) && ok;
+
+    RefreshPowerControls();
+    MessageBoxW(g_hwnd,
+        ok ? L"Power settings applied successfully." : L"One or more power settings could not be applied.",
+        APP_TITLE, ok ? MB_ICONINFORMATION : MB_ICONWARNING);
+}
+
+static void SetPreset(int boostAc, int boostDc, int maxAc, int maxDc)
+{
+    SendMessageW(g_boostAc, CB_SETCURSEL, boostAc, 0);
+    SendMessageW(g_boostDc, CB_SETCURSEL, boostDc, 0);
+    SelectMaxValue(g_maxAc, maxAc);
+    SelectMaxValue(g_maxDc, maxDc);
+}
+
+static void SetListColumns()
+{
+    LVCOLUMNW col = {};
+    col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
+
+    col.pszText = const_cast<LPWSTR>(L"CPU Sensor"); col.cx = 390; col.iSubItem = 0;
+    ListView_InsertColumn(g_list, 0, &col);
+    col.pszText = const_cast<LPWSTR>(L"Current"); col.cx = 120; col.iSubItem = 1;
+    ListView_InsertColumn(g_list, 1, &col);
+    col.pszText = const_cast<LPWSTR>(L"Minimum"); col.cx = 120; col.iSubItem = 2;
+    ListView_InsertColumn(g_list, 2, &col);
+    col.pszText = const_cast<LPWSTR>(L"Maximum"); col.cx = 120; col.iSubItem = 3;
+    ListView_InsertColumn(g_list, 3, &col);
+}
+
+static void RefreshSensors()
+{
+    std::vector<SensorReading> readings;
+    std::wstring error;
+    bool ok = g_reader.ReadCpuTemperatures(readings, error);
+
+    ListView_DeleteAllItems(g_list);
+
+    if (!ok)
+    {
+        SetWindowTextW(g_status, error.c_str());
+        LVITEMW item = {};
+        item.mask = LVIF_TEXT;
+        item.iItem = 0;
+        item.pszText = const_cast<LPWSTR>(L"No CPU temperature data");
+        ListView_InsertItem(g_list, &item);
+        return;
+    }
+
+    double highest = -999.0;
+    double lowest = 999.0;
+    for (size_t i = 0; i < readings.size(); ++i)
+    {
+        const auto& r = readings[i];
+        auto& s = g_stats[r.id];
+        s.current = r.value;
+        if (!g_minMaxInitialized || s.minValue == std::numeric_limits<double>::max())
+        {
+            s.minValue = r.value;
+            s.maxValue = r.value;
+        }
+        else
+        {
+            s.minValue = std::min(s.minValue, r.value);
+            s.maxValue = std::max(s.maxValue, r.value);
+        }
+        highest = std::max(highest, r.value);
+        lowest = std::min(lowest, r.value);
+
+        LVITEMW item = {};
+        item.mask = LVIF_TEXT;
+        item.iItem = static_cast<int>(i);
+        item.pszText = const_cast<LPWSTR>(r.name.c_str());
+        int row = ListView_InsertItem(g_list, &item);
+        std::wstring cur = FormatTemp(s.current);
+        std::wstring minText = FormatTemp(s.minValue);
+        std::wstring maxText = FormatTemp(s.maxValue);
+        ListView_SetItemT
