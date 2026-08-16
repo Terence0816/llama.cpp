@@ -1,0 +1,123 @@
+nd, 175, 480, 190, 250, IDC_BOOST_AC);
+    MakeStatic(hwnd, L"Boost - Battery", 390, 484, 135, 25);
+    g_boostDc = MakeCombo(hwnd, 525, 480, 190, 250, IDC_BOOST_DC);
+
+    MakeStatic(hwnd, L"Max CPU - Plugged in", 20, 522, 155, 25);
+    g_maxAc = MakeCombo(hwnd, 175, 518, 190, 250, IDC_MAX_AC);
+    MakeStatic(hwnd, L"Max CPU - Battery", 390, 522, 135, 25);
+    g_maxDc = MakeCombo(hwnd, 525, 518, 190, 250, IDC_MAX_DC);
+
+    FillBoostCombo(g_boostAc);
+    FillBoostCombo(g_boostDc);
+    FillMaxCombo(g_maxAc);
+    FillMaxCombo(g_maxDc);
+
+    MakeButton(hwnd, L"Balanced cooling", 20, 564, 150, 35, IDC_PRESET_BALANCED);
+    MakeButton(hwnd, L"Quiet / Cool", 180, 564, 130, 35, IDC_PRESET_QUIET);
+    MakeButton(hwnd, L"Maximum performance", 320, 564, 175, 35, IDC_PRESET_MAX);
+    MakeButton(hwnd, L"Apply", 710, 564, 130, 35, IDC_APPLY);
+
+    g_powerStatus = MakeStatic(hwnd, L"Power status", 20, 606, 820, 26, IDC_POWER_STATUS);
+
+    RefreshPowerControls();
+    RefreshSensors();
+    SetTimer(hwnd, 1, 1000, nullptr);
+}
+
+static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    switch (msg)
+    {
+    case WM_CREATE:
+        g_hwnd = hwnd;
+        CreateUi(hwnd);
+        return 0;
+
+    case WM_TIMER:
+        if (wParam == 1)
+            RefreshSensors();
+        return 0;
+
+    case WM_COMMAND:
+        switch (LOWORD(wParam))
+        {
+        case IDC_RESET_MINMAX: ResetMinMax(); return 0;
+        case IDC_REFRESH_SENSOR: RefreshSensors(); return 0;
+        case IDC_START_LHM: StartLibreHardwareMonitor(); return 0;
+        case IDC_APPLY: ApplyPowerControls(); return 0;
+        case IDC_PRESET_BALANCED:
+            // Keep boost available, but request efficient behavior.
+            SetPreset(3, 3, 100, 100);
+            return 0;
+        case IDC_PRESET_QUIET:
+            // Disable boost. Keep max state at 100 so this preset changes only boost policy.
+            SetPreset(0, 0, 100, 100);
+            return 0;
+        case IDC_PRESET_MAX:
+            SetPreset(2, 2, 100, 100);
+            return 0;
+        }
+        break;
+
+    case WM_DESTROY:
+        KillTimer(hwnd, 1);
+        if (g_font) DeleteObject(g_font);
+        if (g_titleFont) DeleteObject(g_titleFont);
+        PostQuitMessage(0);
+        return 0;
+    }
+    return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE, PWSTR, int nCmdShow)
+{
+    INITCOMMONCONTROLSEX icc = { sizeof(icc), ICC_LISTVIEW_CLASSES | ICC_STANDARD_CLASSES };
+    InitCommonControlsEx(&icc);
+
+    HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    bool comInit = SUCCEEDED(hr);
+    if (comInit)
+    {
+        HRESULT sec = CoInitializeSecurity(nullptr, -1, nullptr, nullptr,
+            RPC_C_AUTHN_LEVEL_DEFAULT, RPC_C_IMP_LEVEL_IMPERSONATE,
+            nullptr, EOAC_NONE, nullptr);
+        if (FAILED(sec) && sec != RPC_E_TOO_LATE)
+        {
+            MessageBoxW(nullptr, L"COM security initialization failed.", APP_TITLE, MB_ICONWARNING);
+        }
+    }
+
+    WNDCLASSEXW wc = {};
+    wc.cbSize = sizeof(wc);
+    wc.lpfnWndProc = WndProc;
+    wc.hInstance = hInstance;
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
+    wc.lpszClassName = L"LaptopCoolingToolWindow";
+    wc.hIconSm = wc.hIcon;
+    RegisterClassExW(&wc);
+
+    HWND hwnd = CreateWindowExW(0, wc.lpszClassName, APP_TITLE,
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX,
+        CW_USEDEFAULT, CW_USEDEFAULT, 880, 690,
+        nullptr, nullptr, hInstance, nullptr);
+    if (!hwnd)
+    {
+        if (comInit) CoUninitialize();
+        return 1;
+    }
+
+    ShowWindow(hwnd, nCmdShow);
+    UpdateWindow(hwnd);
+
+    MSG msg;
+    while (GetMessageW(&msg, nullptr, 0, 0) > 0)
+    {
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+    }
+
+    if (comInit) CoUninitialize();
+    return static_cast<int>(msg.wParam);
+}
